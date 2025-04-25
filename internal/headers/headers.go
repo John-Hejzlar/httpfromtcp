@@ -80,3 +80,8 @@ func validTokens(data []byte) bool {
 	}
 	return true
 }
+
+func (h Headers) Override(key, value string) {
+	key = strings.ToLower(key)
+	h[key] = value
+}

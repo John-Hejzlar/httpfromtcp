@@ -5,30 +5,38 @@ import (
 	"net"
 	"sync/atomic"
 
+	"github.com/John-Hejzlar/httpfromtcp/internal/request"
 	"github.com/John-Hejzlar/httpfromtcp/internal/response"
 )
 
+type Handler func(w *response.Writer, req *request.Request)
+
 type Server struct {
-	ln     net.Listener
-	closed atomic.Bool // added closed flag for server state
+	ln      net.Listener
+	closed  atomic.Bool // added closed flag for server state
+	handler Handler     // added handler field
 }
 
-func Serve(port int) (*Server, error) {
+func Serve(port int, handler Handler) (*Server, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, err
 	}
 
 	s := &Server{
-		ln: ln,
+		ln:      ln,
+		handler: handler, // assign handler
 	}
 	go s.listen() // start listening for connections
 	return s, nil
 }
 
 func (s *Server) Close() error {
-	s.closed.Store(true) // mark server as closed
-	return s.ln.Close()
+	s.closed.Store(true)
+	if s.ln != nil {
+		return s.ln.Close()
+	}
+	return nil
 }
 
 func (s *Server) listen() {
@@ -49,15 +57,16 @@ func (s *Server) listen() {
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
-	// Write status line
-	if err := response.WriteStatusLine(conn, response.StatusOK); err != nil {
-		return // ...handle error if needed...
+	w := response.NewWriter(conn)
+	req, err := request.RequestFromReader(conn)
+
+	if err != nil {
+		w.WriteStatusLine(response.StatusCodeBadRequest)
+		body := []byte(fmt.Sprintf("Error parsing request: %v", err))
+		w.WriteHeaders(response.GetDefaultHeaders(len(body)))
+		w.WriteBody(body)
+		return
 	}
-	// Write headers
-	hs := response.GetDefaultHeaders(0)
-	if err := response.WriteHeaders(conn, hs); err != nil {
-		return // ...handle error if needed...
-	}
-	// Write body
-	_, _ = conn.Write([]byte(""))
+
+	s.handler(w, req)
 }
