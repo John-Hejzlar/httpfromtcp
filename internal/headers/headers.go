@@ -85,3 +85,13 @@ func (h Headers) Override(key, value string) {
 	key = strings.ToLower(key)
 	h[key] = value
 }
+
+func (h Headers) Remove(key string) error {
+	key = strings.ToLower(key)
+	_, ok := h[key]
+	if !ok {
+		return fmt.Errorf("header not found: %s", key)
+	}
+	delete(h, key)
+	return nil
+}

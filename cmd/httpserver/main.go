@@ -1,11 +1,17 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/John-Hejzlar/httpfromtcp/internal/headers"
 	"github.com/John-Hejzlar/httpfromtcp/internal/request"
 	"github.com/John-Hejzlar/httpfromtcp/internal/response"
 	"github.com/John-Hejzlar/httpfromtcp/internal/server"
@@ -36,6 +42,17 @@ func handler(w *response.Writer, req *request.Request) {
 		handler500(w, req)
 		return
 	}
+
+	if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin/") {
+		proxyHandler(w, req)
+		return
+	}
+
+	if req.RequestLine.RequestTarget == "/video" {
+		videoHandler(w, req)
+		return
+	}
+
 	handler200(w, req)
 	return
 }
@@ -94,4 +111,81 @@ func handler200(w *response.Writer, _ *request.Request) {
 	w.WriteHeaders(h)
 	w.WriteBody(body)
 	return
+}
+
+func proxyHandler(w *response.Writer, req *request.Request) {
+	path := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin")
+	resp, err := http.Get("http://httpbin.org" + path)
+	if err != nil {
+		handler500(w, req)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Write status line and headers
+	w.WriteStatusLine(response.StatusCodeSuccess)
+	h := response.GetDefaultHeaders(0)
+	h.Override("Transfer-Encoding", "chunked")
+	h.Override("Trailer", "X-Content-SHA256, X-Content-Length")
+	h.Remove("Content-Length")
+	w.WriteHeaders(h)
+
+	fullBody := make([]byte, 0)
+
+	buf := make([]byte, 1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			log.Println("Read bytes:", n)
+			w.WriteChunkedBody(buf[:n])
+		}
+
+		fullBody = append(fullBody, buf[:n]...)
+		// if n == 0 {
+		// 	log.Println("No more data to read")
+		// 	w.WriteChunkedBodyDone()
+		// 	break
+		// }
+
+		if err == io.EOF {
+			break
+		}
+
+		if readErr != nil {
+			fmt.Println("Error reading response body:", err)
+			break
+		}
+	}
+
+	_, err = w.WriteChunkedBodyDone()
+	if err != nil {
+		fmt.Println("Error writing chunked body done:", err)
+	}
+
+	trailers := headers.NewHeaders()
+	sha256 := fmt.Sprintf("%x", sha256.Sum256(fullBody))
+	trailers.Override("X-Content-SHA256", sha256)
+	trailers.Override("X-Content-Length", fmt.Sprintf("%d", len(fullBody)))
+	err = w.WriteTrailers(trailers)
+	if err != nil {
+		fmt.Println("Error writing trailers:", err)
+	}
+	fmt.Println("Wrote trailers")
+}
+
+func videoHandler(w *response.Writer, req *request.Request) {
+	videoFile, err := os.ReadFile("assets/vim.mp4")
+
+	if err != nil {
+		fmt.Println("Error reading video file:", err)
+		return
+	}
+
+	h := response.GetDefaultHeaders(0)
+	h.Override("Content-Type", "video/mp4")
+	h.Override("Content-Length", fmt.Sprintf("%d", len(videoFile)))
+
+	w.WriteStatusLine(response.StatusCodeSuccess)
+	w.WriteHeaders(h)
+	w.WriteBody(videoFile)
 }
